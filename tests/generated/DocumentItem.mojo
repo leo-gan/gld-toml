@@ -88,7 +88,7 @@ struct DocumentItem(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
         var i = 0
         while i < n:
             var c = Int(raw[i])
-            if c == 91 or c == 123:
+            if c == 91 or c == 92 or c == 123:
                 var doc = decode_toml(text)
                 self.read_from(doc, doc.root)
                 return

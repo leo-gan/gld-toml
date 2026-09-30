@@ -655,7 +655,7 @@ def _emit_flat_read(doc: SchemaDoc, ty: SchemaType) -> String:
     out += "        var i = 0\n"
     out += "        while i < n:\n"
     out += "            var c = Int(raw[i])\n"
-    out += "            if c == 91 or c == 123:\n"
+    out += "            if c == 91 or c == 92 or c == 123:\n"
     out += "                var doc = decode_toml(text)\n"
     out += "                self.read_from(doc, doc.root)\n"
     out += "                return\n"
