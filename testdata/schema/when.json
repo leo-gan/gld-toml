@@ -1,0 +1,9 @@
+{
+  "title": "When",
+  "type": "object",
+  "properties": {
+    "at": { "type": "datetime" },
+    "note": { "type": "string" }
+  },
+  "required": ["at"]
+}
