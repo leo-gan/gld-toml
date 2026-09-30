@@ -26,7 +26,7 @@ def encode_toml(
 ) raises DecodeError -> String:
     if doc.kind(doc.root) != TK_TABLE:
         raise DecodeError(DecodeError.KIND_TYPE, 0)
-    var out = List[Byte]()
+    var out = List[Byte](capacity=128)
     var prefix = List[String]()
     _write_body(doc, doc.root, prefix, options, out, False)
     if len(out) == 0 or Int(out[len(out) - 1]) != 10:
@@ -210,6 +210,7 @@ def _pad(mut out: List[Byte], v: Int, width: Int):
         j -= 1
 
 
+@always_inline
 def append_ascii(mut out: List[Byte], text: String):
     var b = text.as_bytes()
     var i = 0
@@ -218,6 +219,7 @@ def append_ascii(mut out: List[Byte], text: String):
         i += 1
 
 
+@always_inline
 def append_bool(mut out: List[Byte], v: Bool):
     if v:
         out.append(Byte(116))
@@ -232,6 +234,7 @@ def append_bool(mut out: List[Byte], v: Bool):
         out.append(Byte(101))
 
 
+@always_inline
 def append_int(mut out: List[Byte], v: Int64):
     if v == Int64(0):
         out.append(Byte(48))
@@ -259,7 +262,96 @@ def append_int(mut out: List[Byte], v: Int64):
         digits -= 1
 
 
+def _append_fixed(mut out: List[Byte], iv: Int64, scale: Int):
+    var z = 0
+    if iv == Int64(0):
+        out.append(Byte(48))
+        out.append(Byte(46))
+        if scale == 0:
+            out.append(Byte(48))
+            return
+        while z < scale:
+            out.append(Byte(48))
+            z += 1
+        return
+    if scale == 0:
+        append_int(out, iv)
+        out.append(Byte(46))
+        out.append(Byte(48))
+        return
+    var nd = 0
+    var t = iv
+    while t > Int64(0):
+        nd += 1
+        t = t // Int64(10)
+    if nd <= scale:
+        out.append(Byte(48))
+        out.append(Byte(46))
+        while z < scale - nd:
+            out.append(Byte(48))
+            z += 1
+        append_int(out, iv)
+        return
+    var div = Int64(1)
+    var k = 1
+    while k < nd:
+        div = div * Int64(10)
+        k += 1
+    var x = iv
+    var placed = 0
+    var left = nd
+    var int_digits = nd - scale
+    while left > 0:
+        if placed == int_digits:
+            out.append(Byte(46))
+        var d = x // div
+        out.append(Byte(48 + Int(d)))
+        x = x - d * div
+        if div > Int64(1):
+            div = div // Int64(10)
+        left -= 1
+        placed += 1
+
+
 def append_float(mut out: List[Byte], v: Float64):
+    var bits = UInt64(v.to_bits())
+    var exp = (bits >> UInt64(52)) & UInt64(2047)
+    if exp == UInt64(2047):
+        if (bits & UInt64(4503599627370495)) != UInt64(0):
+            append_ascii(out, "nan")
+        elif (bits >> UInt64(63)) != UInt64(0):
+            append_ascii(out, "-inf")
+        else:
+            append_ascii(out, "inf")
+        return
+    if bits == UInt64(9223372036854775808):
+        append_ascii(out, "-0.0")
+        return
+    if bits == UInt64(0):
+        append_ascii(out, "0.0")
+        return
+    var neg = (bits >> UInt64(63)) != UInt64(0)
+    var x = v
+    if neg:
+        x = Float64(0) - v
+    var scale = 0
+    var scaled = x
+    var limit = Float64(1000000000000000)
+    while scale <= 12 and scaled == scaled and scaled < limit:
+        var as_int = Int64(scaled)
+        if Float64(as_int) == scaled:
+            var back = Float64(as_int)
+            var s = scale
+            while s > 0:
+                back = back / Float64(10)
+                s -= 1
+            if back == x:
+                if neg:
+                    out.append(Byte(45))
+                _append_fixed(out, as_int, scale)
+                return
+        scaled = scaled * Float64(10)
+        scale += 1
     append_ascii(out, String(v))
 
 
@@ -352,6 +444,7 @@ def _extend(prefix: List[String], key: String) -> List[String]:
     return out^
 
 
+@always_inline
 def _write_ascii(mut out: List[Byte], text: String):
     var b = text.as_bytes()
     var i = 0

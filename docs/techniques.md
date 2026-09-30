@@ -8,12 +8,12 @@ numbers below come from `benches/microbench.mojo` on one machine, 4000
 iterations after a short warmup. They are a local compile-test loop. They are
 not a ranking against serializers in other languages.
 
-On that run, after the encode path stopped building a temporary tree, a
-120-byte `Message` encoded in about 760 ns and decoded in about 730 ns.
-Before that change the same bench was about 3480 ns to encode and 5270 ns
-to decode. A three-key dynamic document encoded in about 550 ns and decoded
-in about 2000 ns; the earlier numbers were about 920 ns and 2770 ns. The
-slower of two back-to-back runs is the one quoted here.
+On that run, the slower figure for each counter across two back-to-back runs
+was 224 ns to encode a 120-byte `Message` and 414 ns to decode it. A three-key
+dynamic document encoded in 223 ns and decoded in 730 ns. Before the encoder
+stopped building a temporary tree, the same bench was about 3480 ns to encode
+that `Message` and 5270 ns to decode it, and about 920 ns and 2770 ns for the
+dynamic document.
 
 ## One arena
 
@@ -37,6 +37,11 @@ it reads. It does not keep a second event list.
 
 **Problem.** A two-step parse copies every string twice and keeps the grammar
 in two places.
+
+A bare key with no dot is copied straight into the arena. That line does not
+allocate a list of key parts. A plain decimal integer is accumulated in place,
+and a basic or literal string with no escape is one copy of the source bytes.
+Underscores, other bases, escapes, and floats still use the general parser.
 
 **Trade-off.** The table-conflict rules (dotted keys, headers, and inline
 tables) live in the same pass as the scanner. That function is long. The
@@ -68,9 +73,12 @@ layout. `tests/test_generated.mojo` checks the struct path. The arena writer
 still serves `TomlDoc`, including documents that have no schema.
 
 A flat generated struct also decodes without an arena. `read_text` scans
-`key = value` lines. A `[` or `{` in the text falls back to the full parser,
-so nested tables still work. Structs that contain tables or arrays always use
-the full parser.
+`key = value` lines. When every field is required, it first tries those keys
+in schema order and returns if the text matches through trailing whitespace.
+A missed prefix, including a backslash in a string value, falls through to
+that line scan. A `[`, `\`, or `{` anywhere in the text uses the full parser,
+so nested tables and escapes still work. Structs that contain tables or
+arrays always use the full parser.
 
 ## Key order and headers
 
@@ -91,8 +99,13 @@ Integers are accumulated in a `UInt64` with an overflow check against the
 Int64 range. Floats are handed to `Float64` after underscores are removed.
 `inf` and `nan` use the IEEE bit patterns directly.
 
-**Trade-off.** The float text is whatever Mojo prints. toml-test compares
-floats numerically, so that text is accepted when it is the same value.
+On the way out, a finite float that equals a short decimal is written from
+that scaled integer, including a decimal point so the next parse stays a
+float. `inf`, `nan`, negative zero, and every other value use Mojo's float
+text.
+
+**Trade-off.** toml-test compares floats numerically, so either spelling is
+accepted when it is the same value.
 
 ## Compliance adapter
 

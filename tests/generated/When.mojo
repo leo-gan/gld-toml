@@ -16,7 +16,7 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.flat import parse_f64, parse_i64, parse_toml_str, skip_tail, span_is, take_prefix, value_end
 from wire.reader import decode_toml
 from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 
@@ -44,14 +44,22 @@ struct When(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
             self._write_inline(buf, options)
             return
         _ = prefix
-        append_ascii(buf, "at")
-        append_ascii(buf, " = ")
+        buf.append(Byte(97))
+        buf.append(Byte(116))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_datetime(buf, self.at)
         buf.append(Byte(10))
         if self.note:
             var _in1 = self.note.value().copy()
-            append_ascii(buf, "note")
-            append_ascii(buf, " = ")
+            buf.append(Byte(110))
+            buf.append(Byte(111))
+            buf.append(Byte(116))
+            buf.append(Byte(101))
+            buf.append(Byte(32))
+            buf.append(Byte(61))
+            buf.append(Byte(32))
             append_toml_str(buf, _in1)
             buf.append(Byte(10))
 

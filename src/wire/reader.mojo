@@ -12,7 +12,7 @@ from wire.doc import (
     TomlDoc,
     bytes_to_string,
 )
-from wire.utf8 import append_scalar, string_from_utf8, validate_utf8
+from wire.utf8 import append_scalar, trusted_utf8, validate_utf8
 
 
 def decode_toml(
@@ -185,7 +185,14 @@ struct Parser[origin: ImmOrigin]:
                 self.skip_comment()
                 self.expect_end()
                 continue
-            if self.is_bare(c) or c == 34 or c == 39:
+            if self.is_bare(c):
+                if not self.try_fast_eq(doc):
+                    self.key_value(doc)
+                self.skip_ws()
+                self.skip_comment()
+                self.expect_end()
+                continue
+            if c == 34 or c == 39:
                 self.key_value(doc)
                 self.skip_ws()
                 self.skip_comment()
@@ -224,7 +231,7 @@ struct Parser[origin: ImmOrigin]:
             var start = self.i
             while self.is_bare(self.peek()):
                 self.i += 1
-            return string_from_utf8(self.data[start : self.i], start)
+            return trusted_utf8(self.data[start : self.i])
         if c == 39:
             if self.peek_at(1) == 39 and self.peek_at(2) == 39:
                 self.err(DecodeError.KIND_SYNTAX)
@@ -386,6 +393,31 @@ struct Parser[origin: ImmOrigin]:
         self.header = elem
         self.header_keys = key^
 
+    def try_fast_eq(mut self, mut doc: TomlDoc) raises DecodeError -> Bool:
+        """Bare `key = value` with no dotted name. Returns false to use the general parser."""
+        var start = self.i
+        while self.is_bare(self.peek()):
+            self.i += 1
+        var key_end = self.i
+        self.skip_ws()
+        if self.peek() != 61:
+            self.i = start
+            return False
+        self.i += 1
+        self.skip_ws()
+        if doc.frozen(self.header):
+            self.err(DecodeError.KIND_DUP_KEY)
+        var key = trusted_utf8(self.data[start:key_end])
+        if doc.find_key(self.header, key) >= 0:
+            self.err(DecodeError.KIND_DUP_KEY)
+        var val = self.parse_value(doc, 0)
+        var ti = doc.add_text(key^)
+        doc.append_child(self.header, ti, val)
+        var k = doc.kind(val)
+        if k == TK_TABLE or k == TK_ARRAY:
+            doc.set_flag(val, FLAG_FROZEN)
+        return True
+
     def key_value(mut self, mut doc: TomlDoc) raises DecodeError:
         var key = self.parse_key()
         self.skip_ws()
@@ -530,6 +562,19 @@ struct Parser[origin: ImmOrigin]:
                 return table
 
     def parse_literal(mut self, multiline: Bool) raises DecodeError -> String:
+        if not multiline:
+            var start_i = self.i
+            var j = self.i + 1
+            while j < self.n:
+                var c = Int(self.data[j])
+                if c == 39:
+                    var text = trusted_utf8(self.data[start_i + 1 : j])
+                    self.i = j + 1
+                    return text^
+                if c < 32 or c == 127:
+                    break
+                j += 1
+            self.i = start_i
         var buf = List[Byte]()
         if multiline:
             self.i += 3
@@ -581,6 +626,19 @@ struct Parser[origin: ImmOrigin]:
         append_scalar(buf, cp, self.i)
 
     def parse_basic(mut self, multiline: Bool) raises DecodeError -> String:
+        if not multiline:
+            var start_i = self.i
+            var j = self.i + 1
+            while j < self.n:
+                var c = Int(self.data[j])
+                if c == 34:
+                    var text = trusted_utf8(self.data[start_i + 1 : j])
+                    self.i = j + 1
+                    return text^
+                if c == 92 or c < 32 or c == 127:
+                    break
+                j += 1
+            self.i = start_i
         self.i += 1
         return self.parse_basic_body(multiline)
 
@@ -738,6 +796,9 @@ struct Parser[origin: ImmOrigin]:
         return cp
 
     def parse_scalar(mut self, mut doc: TomlDoc) raises DecodeError -> Int:
+        var fast = self.try_plain_int(doc)
+        if fast >= 0:
+            return fast
         if self.looks_like_datetime():
             var dt = self.parse_datetime()
             return doc.make_datetime(dt, -1)
@@ -859,6 +920,83 @@ struct Parser[origin: ImmOrigin]:
                 dt.nanos = nanos
         if dt.hour > 23 or dt.minute > 59 or dt.second > 59:
             self.err(DecodeError.KIND_RANGE)
+
+    def _int_terminator(self) -> Bool:
+        var c = self.peek()
+        if c < 0:
+            return True
+        return (
+            c == 32
+            or c == 9
+            or c == 10
+            or c == 13
+            or c == 44
+            or c == 93
+            or c == 125
+            or c == 35
+        )
+
+    def try_plain_int(mut self, mut doc: TomlDoc) -> Int:
+        """Node index of a plain decimal integer, or -1 when the token needs the general number parser."""
+        var start = self.i
+        var neg = False
+        var c = self.peek()
+        if c == 43:
+            self.i += 1
+        elif c == 45:
+            neg = True
+            self.i += 1
+        elif not self.is_digit(c):
+            return -1
+        c = self.peek()
+        if not self.is_digit(c):
+            self.i = start
+            return -1
+        if c == 48:
+            var n1 = self.peek_at(1)
+            if (
+                self.is_digit(n1)
+                or n1 == 46
+                or n1 == 69
+                or n1 == 95
+                or n1 == 98
+                or n1 == 101
+                or n1 == 111
+                or n1 == 120
+            ):
+                self.i = start
+                return -1
+            self.i += 1
+            if not self._int_terminator():
+                self.i = start
+                return -1
+            return doc.make_int(Int64(0), -1)
+        var acc = UInt64(0)
+        var limit = UInt64(9223372036854775807)
+        if neg:
+            limit = limit + UInt64(1)
+        while True:
+            c = self.peek()
+            if not self.is_digit(c):
+                break
+            var d = UInt64(c - 48)
+            if acc > (limit - d) // UInt64(10):
+                self.i = start
+                return -1
+            acc = acc * UInt64(10) + d
+            self.i += 1
+        c = self.peek()
+        if c == 46 or c == 69 or c == 95 or c == 101:
+            self.i = start
+            return -1
+        if not self._int_terminator():
+            self.i = start
+            return -1
+        if neg:
+            if acc == UInt64(9223372036854775808):
+                return doc.make_int(Int64.MIN, -1)
+            return doc.make_int(Int64(0) - Int64(acc), -1)
+        return doc.make_int(Int64(acc), -1)
 
     def parse_number(mut self, mut doc: TomlDoc) raises DecodeError -> Int:
         var save = self.i
