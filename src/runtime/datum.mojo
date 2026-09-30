@@ -3,7 +3,6 @@ from std.collections import List
 from runtime.error import DecodeError
 from runtime.options import EncodeOptions
 from wire.doc import TomlDoc
-from wire.reader import decode_toml
 
 
 trait TomlDatum(Copyable, Movable, Defaultable, Deinitable):
@@ -14,6 +13,9 @@ trait TomlDatum(Copyable, Movable, Defaultable, Deinitable):
         ...
 
     def read_from(mut self, doc: TomlDoc, node: Int) raises DecodeError:
+        ...
+
+    def read_text(mut self, text: String) raises DecodeError:
         ...
 
 
@@ -32,9 +34,8 @@ def decode_text[
     T: TomlDatum
 ](text: String, options: EncodeOptions = EncodeOptions.standard) raises DecodeError -> T:
     _ = options
-    var doc = decode_toml(text)
     var msg = T()
-    msg.read_from(doc, doc.root)
+    msg.read_text(text)
     return msg^
 
 

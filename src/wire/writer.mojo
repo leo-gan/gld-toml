@@ -15,6 +15,7 @@ from wire.doc import (
     TK_STRING,
     TK_TABLE,
     TK_TRUE,
+    TomlDateTime,
     TomlDoc,
 )
 from wire.utf8 import string_from_bytes
@@ -49,14 +50,26 @@ def _write_body(
         var edge = doc.edges[e]
         var child = edge.child
         var k = doc.kind(child)
-        if k != TK_TABLE and not _is_aot(doc, child, options):
+        var write_here: Bool
+        if k == TK_TABLE:
+            write_here = options.inline_tables
+        elif k == TK_ARRAY and _is_aot(doc, child, options):
+            write_here = False
+        else:
+            write_here = True
+        if write_here:
             if len(out) > 0 and Int(out[len(out) - 1]) != 10:
                 out.append(Byte(10))
             _write_key(out, doc.texts[edge.key])
             _write_ascii(out, " = ")
-            _write_value(doc, child, options, out)
+            if k == TK_TABLE:
+                _write_inline_table(doc, child, options, out)
+            else:
+                _write_value(doc, child, options, out)
             out.append(Byte(10))
         e = edge.next
+    if options.inline_tables:
+        return
     e = doc.first_edge(node)
     while e >= 0:
         var edge = doc.edges[e]
@@ -145,9 +158,9 @@ def _write_value(
     if k == TK_STRING:
         _write_string(out, doc.text_at(node))
     elif k == TK_INT:
-        _write_ascii(out, _int_text(doc.int_at(node)))
+        append_int(out, doc.int_at(node))
     elif k == TK_FLOAT:
-        _write_ascii(out, String(doc.float_at(node)))
+        append_float(out, doc.float_at(node))
     elif k == TK_TRUE:
         _write_ascii(out, "true")
     elif k == TK_FALSE:
@@ -178,50 +191,7 @@ def _write_array(
 
 
 def _write_datetime(mut out: List[Byte], doc: TomlDoc, node: Int):
-    var dt = doc.date_at(node)
-    if dt.sub == DT_DATE or dt.sub == DT_OFFSET or dt.sub == DT_LOCAL:
-        _pad(out, dt.year, 4)
-        out.append(Byte(45))
-        _pad(out, dt.month, 2)
-        out.append(Byte(45))
-        _pad(out, dt.day, 2)
-    if dt.sub == DT_OFFSET or dt.sub == DT_LOCAL:
-        out.append(Byte(84))
-    if dt.sub == DT_OFFSET or dt.sub == DT_LOCAL or dt.sub == DT_TIME:
-        _pad(out, dt.hour, 2)
-        out.append(Byte(58))
-        _pad(out, dt.minute, 2)
-        out.append(Byte(58))
-        _pad(out, dt.second, 2)
-        if dt.nanos > 0:
-            out.append(Byte(46))
-            var digits = List[Byte]()
-            var n = dt.nanos
-            var k = 0
-            while k < 9:
-                digits.append(Byte(48 + (n % 10)))
-                n = n // 10
-                k += 1
-            var end = 8
-            while end > 0 and Int(digits[end]) == 48:
-                end -= 1
-            var j = end
-            while j >= 0:
-                out.append(digits[j])
-                j -= 1
-    if dt.sub == DT_OFFSET:
-        if dt.offset_z:
-            out.append(Byte(90))
-        else:
-            var m = dt.offset_minutes
-            if m < 0:
-                out.append(Byte(45))
-                m = 0 - m
-            else:
-                out.append(Byte(43))
-            _pad(out, m // 60, 2)
-            out.append(Byte(58))
-            _pad(out, m % 60, 2)
+    append_datetime(out, doc.date_at(node))
 
 
 def _pad(mut out: List[Byte], v: Int, width: Int):
@@ -240,30 +210,106 @@ def _pad(mut out: List[Byte], v: Int, width: Int):
         j -= 1
 
 
-def _int_text(v: Int64) -> String:
+def append_ascii(mut out: List[Byte], text: String):
+    var b = text.as_bytes()
+    var i = 0
+    while i < len(b):
+        out.append(b[i])
+        i += 1
+
+
+def append_bool(mut out: List[Byte], v: Bool):
+    if v:
+        out.append(Byte(116))
+        out.append(Byte(114))
+        out.append(Byte(117))
+        out.append(Byte(101))
+    else:
+        out.append(Byte(102))
+        out.append(Byte(97))
+        out.append(Byte(108))
+        out.append(Byte(115))
+        out.append(Byte(101))
+
+
+def append_int(mut out: List[Byte], v: Int64):
     if v == Int64(0):
-        return String("0")
+        out.append(Byte(48))
+        return
     if v == Int64.MIN:
-        return String("-9223372036854775808")
+        append_ascii(out, "-9223372036854775808")
+        return
     var neg = v < Int64(0)
     var x = v
     if neg:
         x = Int64(0) - v
-    var buf = List[Byte]()
-    while x > Int64(0):
-        buf.append(Byte(48 + Int(x % Int64(10))))
-        x = x // Int64(10)
-    var out = List[Byte]()
-    if neg:
         out.append(Byte(45))
-    var i = len(buf) - 1
-    while i >= 0:
-        out.append(buf[i])
-        i -= 1
-    try:
-        return String(from_utf8=out)
-    except _:
-        return String("0")
+    var digits = 1
+    var div = Int64(1)
+    var probe = x
+    while probe >= Int64(10):
+        probe = probe // Int64(10)
+        div = div * Int64(10)
+        digits += 1
+    while digits > 0:
+        var d = x // div
+        out.append(Byte(48 + Int(d)))
+        x = x - d * div
+        div = div // Int64(10)
+        digits -= 1
+
+
+def append_float(mut out: List[Byte], v: Float64):
+    append_ascii(out, String(v))
+
+
+def append_toml_str(mut out: List[Byte], text: String):
+    _write_string(out, text)
+
+
+def append_datetime(mut out: List[Byte], dt: TomlDateTime):
+    if dt.sub == DT_DATE or dt.sub == DT_OFFSET or dt.sub == DT_LOCAL:
+        _pad(out, dt.year, 4)
+        out.append(Byte(45))
+        _pad(out, dt.month, 2)
+        out.append(Byte(45))
+        _pad(out, dt.day, 2)
+    if dt.sub == DT_OFFSET or dt.sub == DT_LOCAL:
+        out.append(Byte(84))
+    if dt.sub == DT_OFFSET or dt.sub == DT_LOCAL or dt.sub == DT_TIME:
+        _pad(out, dt.hour, 2)
+        out.append(Byte(58))
+        _pad(out, dt.minute, 2)
+        out.append(Byte(58))
+        _pad(out, dt.second, 2)
+        if dt.nanos > 0:
+            out.append(Byte(46))
+            var scale = 100000000
+            var n = dt.nanos
+            var rest = n
+            var k = 0
+            while k < 9:
+                var d = rest // scale
+                out.append(Byte(48 + d))
+                rest = rest - d * scale
+                scale = scale // 10
+                k += 1
+                if rest == 0:
+                    break
+            _ = n
+    if dt.sub == DT_OFFSET:
+        if dt.offset_z:
+            out.append(Byte(90))
+        else:
+            var m = dt.offset_minutes
+            if m < 0:
+                out.append(Byte(45))
+                m = 0 - m
+            else:
+                out.append(Byte(43))
+            _pad(out, m // 60, 2)
+            out.append(Byte(58))
+            _pad(out, m % 60, 2)
 
 
 def _bare(key: String) -> Bool:

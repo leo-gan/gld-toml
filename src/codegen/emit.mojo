@@ -124,7 +124,9 @@ def _emit_struct(doc: SchemaDoc, ty: SchemaType, name: String, self_id: Int) rai
     out += "from wire.doc import (\n"
     out += "    TK_ARRAY,\n    TK_DATETIME,\n    TK_FALSE,\n    TK_FLOAT,\n    TK_INT,\n"
     out += "    TK_STRING,\n    TK_TABLE,\n    TK_TRUE,\n    TomlDateTime,\n    TomlDoc,\n)\n"
-    out += "from wire.writer import encode_toml\n"
+    out += "from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is\n"
+    out += "from wire.reader import decode_toml\n"
+    out += "from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str\n"
     var i = 0
     while i < len(refs):
         out += "from " + refs[i] + " import " + refs[i] + "\n"
@@ -164,26 +166,33 @@ def _emit_struct(doc: SchemaDoc, ty: SchemaType, name: String, self_id: Int) rai
             out += "        self." + fname + " = " + _zero(fty) + "\n"
             i += 1
     out += "\n    def encoded_len(self, options: EncodeOptions) raises -> Int:\n"
-    out += "        var doc = self._to_doc()\n"
-    out += "        var text = encode_toml(doc, options)\n"
-    out += "        return text.byte_length()\n\n"
+    out += "        var buf = List[Byte]()\n"
+    out += "        self.encode_to(buf, options)\n"
+    out += "        return len(buf)\n\n"
     out += "    def encode_to(self, mut buf: List[Byte], options: EncodeOptions) raises:\n"
-    out += "        var doc = self._to_doc()\n"
-    out += "        var text = encode_toml(doc, options)\n"
-    out += "        var raw = text.as_bytes()\n"
-    out += "        var i = 0\n"
-    out += "        while i < len(raw):\n"
-    out += "            buf.append(raw[i])\n"
-    out += "            i += 1\n\n"
-    out += "    def _to_doc(self) raises -> TomlDoc:\n"
-    out += "        var doc = TomlDoc()\n"
-    out += "        self._fill(doc, doc.root)\n"
-    out += "        return doc^\n\n"
-    out += "    def _fill(self, mut doc: TomlDoc, node: Int) raises:\n"
+    out += "        var start = len(buf)\n"
+    out += "        self._write(buf, options, True, String(), False)\n"
+    out += "        if len(buf) == start or Int(buf[len(buf) - 1]) != 10:\n"
+    out += "            buf.append(Byte(10))\n\n"
+    out += "    def _write(self, mut buf: List[Byte], options: EncodeOptions, root: Bool, prefix: String, inline: Bool) raises:\n"
+    out += "        if inline or ((not root) and options.inline_tables):\n"
+    out += "            self._write_inline(buf, options)\n"
+    out += "            return\n"
     if ty.kind == ST_UNION:
-        out += _emit_union_fill(doc, ty)
+        out += _emit_union_write(doc, ty, False)
     else:
-        out += _emit_fill(doc, ty, scc, self_id)
+        out += _emit_object_write(doc, ty, scc, self_id, False)
+    out += "\n    def _write_inline(self, mut buf: List[Byte], options: EncodeOptions) raises:\n"
+    if ty.kind == ST_UNION:
+        out += _emit_union_write(doc, ty, True)
+    else:
+        out += _emit_object_write(doc, ty, scc, self_id, True)
+    out += "\n    def read_text(mut self, text: String) raises DecodeError:\n"
+    if ty.kind == ST_OBJECT and _is_flat(doc, ty):
+        out += _emit_flat_read(doc, ty)
+    else:
+        out += "        var doc = decode_toml(text)\n"
+        out += "        self.read_from(doc, doc.root)\n"
     out += "\n    def read_from(mut self, doc: TomlDoc, node: Int) raises DecodeError:\n"
     if ty.kind == ST_UNION:
         out += _emit_union_read(doc, ty)
@@ -444,15 +453,311 @@ def _read_array(doc: SchemaDoc, dest: String, arr: SchemaType, nvar: String, opt
     return out
 
 
-def _emit_union_fill(doc: SchemaDoc, ty: SchemaType) -> String:
-    var out = String("        _ = node\n")
+def _bare_key(name: String) -> Bool:
+    var b = name.as_bytes()
+    if len(b) == 0:
+        return False
+    var i = 0
+    while i < len(b):
+        var c = Int(b[i])
+        var ok = (
+            (c >= 65 and c <= 90)
+            or (c >= 97 and c <= 122)
+            or (c >= 48 and c <= 57)
+            or c == 95
+            or c == 45
+        )
+        if not ok:
+            return False
+        i += 1
+    return True
+
+
+def _key_lit(name: String) -> String:
+    if _bare_key(name):
+        return "append_ascii(buf, \"" + name + "\")\n"
+    return "append_toml_str(buf, String(\"" + name + "\"))\n"
+
+
+def _emit_object_write(
+    doc: SchemaDoc, ty: SchemaType, scc: List[Int], self_id: Int, inline: Bool
+) raises DecodeError -> String:
+    _ = scc
+    _ = self_id
+    var out = String("")
+    if inline:
+        out += "        buf.append(Byte(123))\n"
+        out += "        var _first = True\n"
+    else:
+        out += "        _ = prefix\n"
+    var i = 0
+    while i < len(ty.props):
+        var p = ty.props[i].copy()
+        var fname = mojo_ident(p.name)
+        var expr = String("self.") + fname
+        var optional = doc.types[p.type_id].kind == ST_OPTIONAL
+        var inner_id = p.type_id
+        if optional:
+            inner_id = doc.types[p.type_id].inner
+        var u = _unwrap(doc, inner_id).copy()
+        if optional:
+            var slot = String("_in") + String(i)
+            out += "        if " + expr + ":\n"
+            out += "            var " + slot + " = " + expr + ".value().copy()\n"
+            expr = slot
+            if _in_scc(doc, inner_id, scc, self_id):
+                expr = slot + "[]"
+        var pad = String("        ")
+        if optional:
+            pad += "    "
+        if inline:
+            out += pad + "if not _first:\n"
+            out += pad + "    append_ascii(buf, \", \")\n"
+            out += pad + "_first = False\n"
+            out += pad + _key_lit(p.name)
+            out += pad + "append_ascii(buf, \" = \")\n"
+            out += _emit_value_write(doc, u, expr, pad, True, p.name)
+        else:
+            out += _emit_std_field(doc, u, expr, p.name, pad, i)
+        i += 1
+    if inline:
+        out += "        buf.append(Byte(125))\n"
+        if len(ty.props) == 0:
+            out += "        _ = options\n"
+    elif len(ty.props) == 0:
+        out += "        _ = options\n        _ = buf\n"
+    return out
+
+
+def _emit_std_field(
+    doc: SchemaDoc, u: SchemaType, expr: String, key: String, pad: String, slot: Int
+) -> String:
+    var out = String("")
+    if u.kind == ST_OBJECT or u.kind == ST_UNION:
+        var next = "prefix + \"." + key + "\""
+        var np = String("_np") + String(slot)
+        out += pad + "var " + np + " = String(\"" + key + "\")\n"
+        out += pad + "if prefix.byte_length() > 0:\n"
+        out += pad + "    " + np + " = prefix + \"." + key + "\"\n"
+        out += pad + "if options.inline_tables:\n"
+        out += pad + "    " + _key_lit(key)
+        out += pad + "    append_ascii(buf, \" = \")\n"
+        out += pad + "    " + expr + "._write(buf, options, False, " + np + ", True)\n"
+        out += pad + "    buf.append(Byte(10))\n"
+        out += pad + "else:\n"
+        out += pad + "    buf.append(Byte(10))\n"
+        out += pad + "    append_ascii(buf, \"[\")\n"
+        out += pad + "    append_ascii(buf, " + np + ")\n"
+        out += pad + "    append_ascii(buf, \"]\\n\")\n"
+        out += pad + "    " + expr + "._write(buf, options, False, " + np + ", False)\n"
+        _ = next
+        return out
+    if u.kind == ST_ARRAY:
+        var inner = _unwrap(doc, u.inner).copy()
+        if inner.kind == ST_OBJECT or inner.kind == ST_UNION:
+            var next = "prefix + \"." + key + "\""
+            var np = String("_np") + String(slot)
+            var ix = String("_i") + String(slot)
+            out += pad + "var " + np + " = String(\"" + key + "\")\n"
+            out += pad + "if prefix.byte_length() > 0:\n"
+            out += pad + "    " + np + " = prefix + \"." + key + "\"\n"
+            out += pad + "var " + ix + " = 0\n"
+            out += pad + "if options.compact_arrays or options.inline_tables:\n"
+            out += pad + "    " + _key_lit(key)
+            out += pad + "    append_ascii(buf, \" = [\")\n"
+            out += pad + "    while " + ix + " < len(" + expr + "):\n"
+            out += pad + "        if " + ix + " > 0:\n"
+            out += pad + "            append_ascii(buf, \", \")\n"
+            out += pad + "        " + expr + "[" + ix + "]._write(buf, options, False, " + np + ", True)\n"
+            out += pad + "        " + ix + " += 1\n"
+            out += pad + "    append_ascii(buf, \"]\\n\")\n"
+            out += pad + "else:\n"
+            out += pad + "    while " + ix + " < len(" + expr + "):\n"
+            out += pad + "        buf.append(Byte(10))\n"
+            out += pad + "        append_ascii(buf, \"[[\")\n"
+            out += pad + "        append_ascii(buf, " + np + ")\n"
+            out += pad + "        append_ascii(buf, \"]]\\n\")\n"
+            out += pad + "        " + expr + "[" + ix + "]._write(buf, options, False, " + np + ", False)\n"
+            out += pad + "        " + ix + " += 1\n"
+            _ = next
+            return out
+        var ix = String("_i") + String(slot)
+        out += pad + _key_lit(key)
+        out += pad + "append_ascii(buf, \" = [\")\n"
+        out += pad + "var " + ix + " = 0\n"
+        out += pad + "while " + ix + " < len(" + expr + "):\n"
+        out += pad + "    if " + ix + " > 0:\n"
+        out += pad + "        append_ascii(buf, \", \")\n"
+        out += pad + "    " + _scalar_write(inner, expr + "[" + ix + "]")
+        out += pad + "    " + ix + " += 1\n"
+        out += pad + "append_ascii(buf, \"]\\n\")\n"
+        return out
+    out += pad + _key_lit(key)
+    out += pad + "append_ascii(buf, \" = \")\n"
+    out += pad + _scalar_write(u, expr)
+    out += pad + "buf.append(Byte(10))\n"
+    return out
+
+
+def _emit_value_write(
+    doc: SchemaDoc, u: SchemaType, expr: String, pad: String, inline: Bool, key: String
+) -> String:
+    _ = doc
+    _ = inline
+    _ = key
+    if u.kind == ST_OBJECT or u.kind == ST_UNION:
+        return pad + expr + "._write(buf, options, False, String(), True)\n"
+    if u.kind == ST_ARRAY:
+        var inner = _unwrap(doc, u.inner).copy()
+        var out = pad + "buf.append(Byte(91))\n"
+        out += pad + "var _i = 0\n"
+        out += pad + "while _i < len(" + expr + "):\n"
+        out += pad + "    if _i > 0:\n"
+        out += pad + "        append_ascii(buf, \", \")\n"
+        if inner.kind == ST_OBJECT or inner.kind == ST_UNION:
+            out += pad + "    " + expr + "[_i]._write(buf, options, False, String(), True)\n"
+        else:
+            out += pad + "    " + _scalar_write(inner, expr + "[_i]")
+        out += pad + "    _i += 1\n"
+        out += pad + "buf.append(Byte(93))\n"
+        return out
+    return pad + _scalar_write(u, expr)
+
+
+def _scalar_write(u: SchemaType, expr: String) -> String:
+    if u.kind == ST_BOOL:
+        return "append_bool(buf, " + expr + ")\n"
+    if u.kind == ST_INT:
+        return "append_int(buf, " + expr + ")\n"
+    if u.kind == ST_NUMBER:
+        return "append_float(buf, " + expr + ")\n"
+    if u.kind == ST_STRING:
+        return "append_toml_str(buf, " + expr + ")\n"
+    if u.kind == ST_TIMESTAMP:
+        return "append_datetime(buf, " + expr + ")\n"
+    return "_ = " + expr + "\n"
+
+
+def _is_flat(doc: SchemaDoc, ty: SchemaType) -> Bool:
+    var i = 0
+    while i < len(ty.props):
+        var tid = ty.props[i].type_id
+        var u = _unwrap(doc, tid).copy()
+        if u.kind != ST_BOOL and u.kind != ST_INT and u.kind != ST_NUMBER and u.kind != ST_STRING:
+            return False
+        i += 1
+    return True
+
+
+def _emit_flat_read(doc: SchemaDoc, ty: SchemaType) -> String:
+    var out = String("        var raw = text.as_bytes()\n")
+    out += "        var n = len(raw)\n"
+    out += "        var i = 0\n"
+    out += "        while i < n:\n"
+    out += "            var c = Int(raw[i])\n"
+    out += "            if c == 91 or c == 92 or c == 123:\n"
+    out += "                var doc = decode_toml(text)\n"
+    out += "                self.read_from(doc, doc.root)\n"
+    out += "                return\n"
+    out += "            i += 1\n"
+    out += "        i = 0\n"
+    var p = 0
+    while p < len(ty.props):
+        if ty.props[p].required:
+            out += "        var _saw" + String(p) + " = False\n"
+        p += 1
+    out += "        while i < n:\n"
+    out += "            var c = Int(raw[i])\n"
+    out += "            if c == 32 or c == 9 or c == 10 or c == 13:\n"
+    out += "                i += 1\n"
+    out += "                continue\n"
+    out += "            if c == 35:\n"
+    out += "                while i < n and Int(raw[i]) != 10:\n"
+    out += "                    i += 1\n"
+    out += "                continue\n"
+    out += "            var ks = i\n"
+    out += "            while i < n:\n"
+    out += "                c = Int(raw[i])\n"
+    out += "                if c == 32 or c == 9 or c == 61:\n"
+    out += "                    break\n"
+    out += "                i += 1\n"
+    out += "            var ke = i\n"
+    out += "            while i < n and (Int(raw[i]) == 32 or Int(raw[i]) == 9):\n"
+    out += "                i += 1\n"
+    out += "            if i >= n or Int(raw[i]) != 61:\n"
+    out += "                raise DecodeError(DecodeError.KIND_SYNTAX, i)\n"
+    out += "            i += 1\n"
+    out += "            while i < n and (Int(raw[i]) == 32 or Int(raw[i]) == 9):\n"
+    out += "                i += 1\n"
+    out += "            var vs = i\n"
+    out += "            if i < n and (Int(raw[i]) == 34 or Int(raw[i]) == 39):\n"
+    out += "                var q = Int(raw[i])\n"
+    out += "                i += 1\n"
+    out += "                while i < n and Int(raw[i]) != q:\n"
+    out += "                    if Int(raw[i]) == 92:\n"
+    out += "                        i += 1\n"
+    out += "                    if i < n:\n"
+    out += "                        i += 1\n"
+    out += "                if i < n:\n"
+    out += "                    i += 1\n"
+    out += "            else:\n"
+    out += "                while i < n and Int(raw[i]) != 10 and Int(raw[i]) != 35:\n"
+    out += "                    i += 1\n"
+    out += "            var ve = i\n"
+    out += "            while ve > vs and (Int(raw[ve - 1]) == 32 or Int(raw[ve - 1]) == 9):\n"
+    out += "                ve -= 1\n"
+    p = 0
+    while p < len(ty.props):
+        var prop = ty.props[p].copy()
+        var fname = mojo_ident(prop.name)
+        var u = _unwrap(doc, prop.type_id).copy()
+        var kw = "if"
+        if p > 0:
+            kw = "elif"
+        out += "            " + kw + " span_is(raw, ks, ke, \"" + prop.name + "\"):\n"
+        if prop.required:
+            out += "                _saw" + String(p) + " = True\n"
+        if u.kind == ST_BOOL:
+            out += "                self." + fname + " = span_is(raw, vs, ve, \"true\")\n"
+            out += "                if not self." + fname + " and not span_is(raw, vs, ve, \"false\"):\n"
+            out += "                    raise DecodeError(DecodeError.KIND_SYNTAX, vs)\n"
+        elif u.kind == ST_INT:
+            out += "                self." + fname + " = parse_i64(raw, vs, ve)\n"
+        elif u.kind == ST_NUMBER:
+            out += "                self." + fname + " = parse_f64(raw, vs, ve)\n"
+        elif u.kind == ST_STRING:
+            out += "                self." + fname + " = parse_toml_str(raw, vs, ve)\n"
+        else:
+            out += "                _ = vs\n"
+        p += 1
+    p = 0
+    while p < len(ty.props):
+        if ty.props[p].required:
+            out += "        if not _saw" + String(p) + ":\n"
+            out += "            raise DecodeError(DecodeError.KIND_TYPE, 0)\n"
+        p += 1
+    return out
+
+
+def _emit_union_write(doc: SchemaDoc, ty: SchemaType, inline: Bool) -> String:
+    var out = String("")
+    if inline:
+        out += "        _ = options\n"
+    else:
+        out += "        _ = prefix\n        _ = root\n        _ = inline\n"
     var i = 0
     while i < len(ty.branch_ids):
         var bn = mojo_ident(_unwrap(doc, ty.branch_ids[i]).name)
         var field = mojo_ident(bn)
         out += "        if self.tag == " + String(i) + " and self." + field + ":\n"
-        out += "            self." + field + ".value()._fill(doc, node)\n"
+        if inline:
+            out += "            self." + field + ".value()._write_inline(buf, options)\n"
+        else:
+            out += "            self." + field + ".value()._write(buf, options, True, prefix, False)\n"
+        out += "            return\n"
         i += 1
+    if inline:
+        out += "        buf.append(Byte(123))\n        buf.append(Byte(125))\n"
     return out
 
 

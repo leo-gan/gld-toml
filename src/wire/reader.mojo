@@ -12,7 +12,7 @@ from wire.doc import (
     TomlDoc,
     bytes_to_string,
 )
-from wire.utf8 import append_scalar, string_from_utf8
+from wire.utf8 import append_scalar, string_from_utf8, validate_utf8
 
 
 def decode_toml(
@@ -26,7 +26,7 @@ def decode_bytes[
 ](data: Span[Byte, origin], options: DecodeOptions = DecodeOptions.default) raises DecodeError -> TomlDoc:
     if len(data) >= 3 and Int(data[0]) == 0xEF and Int(data[1]) == 0xBB and Int(data[2]) == 0xBF:
         raise DecodeError(DecodeError.KIND_SYNTAX, 0)
-    _ = string_from_utf8(data, 0)
+    validate_utf8(data)
     var doc = TomlDoc()
     var p = Parser[origin](data, options)
     p.run(doc)
@@ -270,7 +270,7 @@ struct Parser[origin: ImmOrigin]:
             if doc.kind(cur) == TK_ARRAY:
                 if not access_lists or doc.child_count(cur) == 0:
                     self.err(DecodeError.KIND_DUP_KEY)
-                cur = doc.edges[doc.tail[cur]].child
+                cur = doc.edges[doc.nodes[cur].tail].child
             if doc.kind(cur) != TK_TABLE:
                 self.err(DecodeError.KIND_DUP_KEY)
             if create and doc.frozen(cur):
@@ -303,7 +303,7 @@ struct Parser[origin: ImmOrigin]:
         if doc.kind(cur) == TK_ARRAY:
             if not access_lists or doc.child_count(cur) == 0:
                 self.err(DecodeError.KIND_DUP_KEY)
-            cur = doc.edges[doc.tail[cur]].child
+            cur = doc.edges[doc.nodes[cur].tail].child
         if doc.kind(cur) != TK_TABLE:
             self.err(DecodeError.KIND_DUP_KEY)
         return cur
@@ -317,7 +317,7 @@ struct Parser[origin: ImmOrigin]:
             if doc.kind(cur) == TK_ARRAY:
                 if doc.child_count(cur) == 0:
                     return False
-                cur = doc.edges[doc.tail[cur]].child
+                cur = doc.edges[doc.nodes[cur].tail].child
             if doc.kind(cur) != TK_TABLE:
                 return False
             if doc.frozen(cur):
@@ -403,7 +403,7 @@ struct Parser[origin: ImmOrigin]:
         if self.flag_on(doc, parent_keys, FLAG_FROZEN):
             self.err(DecodeError.KIND_DUP_KEY)
         var parent = self.nest(doc, doc.root, parent_keys, True, True)
-        var stem = String(key[len(key) - 1])
+        var stem = key.pop()
         if doc.find_key(parent, stem) >= 0:
             self.err(DecodeError.KIND_DUP_KEY)
         var val = self.parse_value(doc, 0)

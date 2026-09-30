@@ -16,7 +16,9 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.writer import encode_toml
+from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.reader import decode_toml
+from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 
 struct Message(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
     var f_bool: Bool
@@ -39,41 +41,211 @@ struct Message(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
         self.f_string_2 = String()
 
     def encoded_len(self, options: EncodeOptions) raises -> Int:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        return text.byte_length()
+        var buf = List[Byte]()
+        self.encode_to(buf, options)
+        return len(buf)
 
     def encode_to(self, mut buf: List[Byte], options: EncodeOptions) raises:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
+        var start = len(buf)
+        self._write(buf, options, True, String(), False)
+        if len(buf) == start or Int(buf[len(buf) - 1]) != 10:
+            buf.append(Byte(10))
+
+    def _write(self, mut buf: List[Byte], options: EncodeOptions, root: Bool, prefix: String, inline: Bool) raises:
+        if inline or ((not root) and options.inline_tables):
+            self._write_inline(buf, options)
+            return
+        _ = prefix
+        append_ascii(buf, "f_bool")
+        append_ascii(buf, " = ")
+        append_bool(buf, self.f_bool)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_int32")
+        append_ascii(buf, " = ")
+        append_int(buf, self.f_int32)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_int64")
+        append_ascii(buf, " = ")
+        append_int(buf, self.f_int64)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_float64")
+        append_ascii(buf, " = ")
+        append_float(buf, self.f_float64)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_string")
+        append_ascii(buf, " = ")
+        append_toml_str(buf, self.f_string)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_bool_2")
+        append_ascii(buf, " = ")
+        append_bool(buf, self.f_bool_2)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_int32_2")
+        append_ascii(buf, " = ")
+        append_int(buf, self.f_int32_2)
+        buf.append(Byte(10))
+        append_ascii(buf, "f_string_2")
+        append_ascii(buf, " = ")
+        append_toml_str(buf, self.f_string_2)
+        buf.append(Byte(10))
+
+    def _write_inline(self, mut buf: List[Byte], options: EncodeOptions) raises:
+        buf.append(Byte(123))
+        var _first = True
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_bool")
+        append_ascii(buf, " = ")
+        append_bool(buf, self.f_bool)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_int32")
+        append_ascii(buf, " = ")
+        append_int(buf, self.f_int32)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_int64")
+        append_ascii(buf, " = ")
+        append_int(buf, self.f_int64)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_float64")
+        append_ascii(buf, " = ")
+        append_float(buf, self.f_float64)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_string")
+        append_ascii(buf, " = ")
+        append_toml_str(buf, self.f_string)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_bool_2")
+        append_ascii(buf, " = ")
+        append_bool(buf, self.f_bool_2)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_int32_2")
+        append_ascii(buf, " = ")
+        append_int(buf, self.f_int32_2)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "f_string_2")
+        append_ascii(buf, " = ")
+        append_toml_str(buf, self.f_string_2)
+        buf.append(Byte(125))
+
+    def read_text(mut self, text: String) raises DecodeError:
         var raw = text.as_bytes()
+        var n = len(raw)
         var i = 0
-        while i < len(raw):
-            buf.append(raw[i])
+        while i < n:
+            var c = Int(raw[i])
+            if c == 91 or c == 92 or c == 123:
+                var doc = decode_toml(text)
+                self.read_from(doc, doc.root)
+                return
             i += 1
-
-    def _to_doc(self) raises -> TomlDoc:
-        var doc = TomlDoc()
-        self._fill(doc, doc.root)
-        return doc^
-
-    def _fill(self, mut doc: TomlDoc, node: Int) raises:
-        var _k0 = doc.add_text(String("f_bool"))
-        doc.append_child(node, _k0, doc.make_bool(self.f_bool, node))
-        var _k1 = doc.add_text(String("f_int32"))
-        doc.append_child(node, _k1, doc.make_int(self.f_int32, node))
-        var _k2 = doc.add_text(String("f_int64"))
-        doc.append_child(node, _k2, doc.make_int(self.f_int64, node))
-        var _k3 = doc.add_text(String("f_float64"))
-        doc.append_child(node, _k3, doc.make_float(UInt64((self.f_float64).to_bits()), node))
-        var _k4 = doc.add_text(String("f_string"))
-        doc.append_child(node, _k4, doc.make_string(String(self.f_string), node))
-        var _k5 = doc.add_text(String("f_bool_2"))
-        doc.append_child(node, _k5, doc.make_bool(self.f_bool_2, node))
-        var _k6 = doc.add_text(String("f_int32_2"))
-        doc.append_child(node, _k6, doc.make_int(self.f_int32_2, node))
-        var _k7 = doc.add_text(String("f_string_2"))
-        doc.append_child(node, _k7, doc.make_string(String(self.f_string_2), node))
+        i = 0
+        var _saw0 = False
+        var _saw1 = False
+        var _saw2 = False
+        var _saw3 = False
+        var _saw4 = False
+        var _saw5 = False
+        var _saw6 = False
+        var _saw7 = False
+        while i < n:
+            var c = Int(raw[i])
+            if c == 32 or c == 9 or c == 10 or c == 13:
+                i += 1
+                continue
+            if c == 35:
+                while i < n and Int(raw[i]) != 10:
+                    i += 1
+                continue
+            var ks = i
+            while i < n:
+                c = Int(raw[i])
+                if c == 32 or c == 9 or c == 61:
+                    break
+                i += 1
+            var ke = i
+            while i < n and (Int(raw[i]) == 32 or Int(raw[i]) == 9):
+                i += 1
+            if i >= n or Int(raw[i]) != 61:
+                raise DecodeError(DecodeError.KIND_SYNTAX, i)
+            i += 1
+            while i < n and (Int(raw[i]) == 32 or Int(raw[i]) == 9):
+                i += 1
+            var vs = i
+            if i < n and (Int(raw[i]) == 34 or Int(raw[i]) == 39):
+                var q = Int(raw[i])
+                i += 1
+                while i < n and Int(raw[i]) != q:
+                    if Int(raw[i]) == 92:
+                        i += 1
+                    if i < n:
+                        i += 1
+                if i < n:
+                    i += 1
+            else:
+                while i < n and Int(raw[i]) != 10 and Int(raw[i]) != 35:
+                    i += 1
+            var ve = i
+            while ve > vs and (Int(raw[ve - 1]) == 32 or Int(raw[ve - 1]) == 9):
+                ve -= 1
+            if span_is(raw, ks, ke, "f_bool"):
+                _saw0 = True
+                self.f_bool = span_is(raw, vs, ve, "true")
+                if not self.f_bool and not span_is(raw, vs, ve, "false"):
+                    raise DecodeError(DecodeError.KIND_SYNTAX, vs)
+            elif span_is(raw, ks, ke, "f_int32"):
+                _saw1 = True
+                self.f_int32 = parse_i64(raw, vs, ve)
+            elif span_is(raw, ks, ke, "f_int64"):
+                _saw2 = True
+                self.f_int64 = parse_i64(raw, vs, ve)
+            elif span_is(raw, ks, ke, "f_float64"):
+                _saw3 = True
+                self.f_float64 = parse_f64(raw, vs, ve)
+            elif span_is(raw, ks, ke, "f_string"):
+                _saw4 = True
+                self.f_string = parse_toml_str(raw, vs, ve)
+            elif span_is(raw, ks, ke, "f_bool_2"):
+                _saw5 = True
+                self.f_bool_2 = span_is(raw, vs, ve, "true")
+                if not self.f_bool_2 and not span_is(raw, vs, ve, "false"):
+                    raise DecodeError(DecodeError.KIND_SYNTAX, vs)
+            elif span_is(raw, ks, ke, "f_int32_2"):
+                _saw6 = True
+                self.f_int32_2 = parse_i64(raw, vs, ve)
+            elif span_is(raw, ks, ke, "f_string_2"):
+                _saw7 = True
+                self.f_string_2 = parse_toml_str(raw, vs, ve)
+        if not _saw0:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw1:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw2:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw3:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw4:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw5:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw6:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
+        if not _saw7:
+            raise DecodeError(DecodeError.KIND_TYPE, 0)
 
     def read_from(mut self, doc: TomlDoc, node: Int) raises DecodeError:
         if doc.kind(node) != TK_TABLE:

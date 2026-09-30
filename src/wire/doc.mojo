@@ -29,12 +29,25 @@ struct TomlNode(Copyable, ImplicitlyCopyable):
     var a: Int64
     var b: UInt64
     var c: Int
+    var parent: Int
+    var flags: Int
+    var tail: Int
 
-    def __init__(out self, kind: Int, a: Int64 = 0, b: UInt64 = 0, c: Int = 0):
+    def __init__(
+        out self,
+        kind: Int,
+        a: Int64 = 0,
+        b: UInt64 = 0,
+        c: Int = 0,
+        parent: Int = -1,
+    ):
         self.kind = kind
         self.a = a
         self.b = b
         self.c = c
+        self.parent = parent
+        self.flags = 0
+        self.tail = -1
 
 
 struct Edge(Copyable, ImplicitlyCopyable):
@@ -82,31 +95,21 @@ struct TomlDoc(Movable):
     var edges: List[Edge]
     var texts: List[String]
     var dates: List[TomlDateTime]
-    var flags: List[Int]
-    var parents: List[Int]
-    var tail: List[Int]
     var root: Int
 
     def __init__(out self):
-        self.nodes = List[TomlNode]()
-        self.edges = List[Edge]()
-        self.texts = List[String]()
+        self.nodes = List[TomlNode](capacity=16)
+        self.edges = List[Edge](capacity=16)
+        self.texts = List[String](capacity=8)
         self.dates = List[TomlDateTime]()
-        self.flags = List[Int]()
-        self.parents = List[Int]()
-        self.tail = List[Int]()
-        self.nodes.append(TomlNode(TK_TABLE, a=Int64(-1)))
-        self.flags.append(0)
-        self.parents.append(-1)
-        self.tail.append(-1)
+        self.nodes.append(TomlNode(TK_TABLE, a=Int64(-1), parent=-1))
         self.root = 0
 
     def _push(mut self, node: TomlNode, parent: Int) -> Int:
         var idx = len(self.nodes)
-        self.nodes.append(node)
-        self.flags.append(0)
-        self.parents.append(parent)
-        self.tail.append(-1)
+        var stored = node
+        stored.parent = parent
+        self.nodes.append(stored)
         return idx
 
     def add_text(mut self, var text: String) -> Int:
@@ -148,31 +151,31 @@ struct TomlDoc(Movable):
         return self.nodes[node].kind
 
     def set_flag(mut self, node: Int, bit: Int):
-        self.flags[node] = self.flags[node] | bit
+        self.nodes[node].flags = self.nodes[node].flags | bit
 
     def has_flag(self, node: Int, bit: Int) -> Bool:
         if node < 0:
             return False
-        return (self.flags[node] & bit) != 0
+        return (self.nodes[node].flags & bit) != 0
 
     def frozen(self, node: Int) -> Bool:
         var n = node
         while n >= 0:
-            if (self.flags[n] & FLAG_FROZEN) != 0:
+            if (self.nodes[n].flags & FLAG_FROZEN) != 0:
                 return True
-            n = self.parents[n]
+            n = self.nodes[n].parent
         return False
 
     def append_child(mut self, parent: Int, key: Int, child: Int):
         var e = len(self.edges)
         self.edges.append(Edge(key, child, -1))
-        self.parents[child] = parent
-        var last = self.tail[parent]
+        self.nodes[child].parent = parent
+        var last = self.nodes[parent].tail
         if last < 0:
             self.nodes[parent].a = Int64(e)
         else:
             self.edges[last].next = e
-        self.tail[parent] = e
+        self.nodes[parent].tail = e
         self.nodes[parent].c += 1
 
     def child_count(self, node: Int) -> Int:
@@ -185,10 +188,23 @@ struct TomlDoc(Movable):
         var e = self.first_edge(table)
         while e >= 0:
             var edge = self.edges[e]
-            if edge.key >= 0 and self.texts[edge.key] == key:
+            if edge.key >= 0 and self.text_eq(edge.key, key):
                 return edge.child
             e = edge.next
         return -1
+
+    def text_eq(self, idx: Int, key: String) -> Bool:
+        ref stored = self.texts[idx]
+        if stored.byte_length() != key.byte_length():
+            return False
+        var a = stored.as_bytes()
+        var b = key.as_bytes()
+        var i = 0
+        while i < len(a):
+            if a[i] != b[i]:
+                return False
+            i += 1
+        return True
 
     def text_at(self, node: Int) -> String:
         return self.texts[Int(self.nodes[node].a)]
