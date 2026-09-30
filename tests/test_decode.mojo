@@ -1,6 +1,8 @@
 from runtime.error import DecodeError
+from runtime.options import EncodeOptions
 from wire.doc import DT_OFFSET, TK_INT, TK_STRING, TK_TABLE
 from wire.reader import decode_toml
+from wire.writer import encode_toml
 
 
 def fail(msg: String) raises:
@@ -42,4 +44,13 @@ def main() raises:
             fail("dup kind")
     if not bad:
         fail("dup should fail")
+
+    var point = decode_toml(String("[point]\nx = 1\ny = 2\n"))
+    var inline = encode_toml(point, EncodeOptions(True, False))
+    if inline.find("{") < 0:
+        fail("inline table")
+    var again = decode_toml(inline)
+    var px = again.find_key(again.find_key(again.root, "point"), "x")
+    if again.int_at(px) != Int64(1):
+        fail("inline value")
     print("ok")

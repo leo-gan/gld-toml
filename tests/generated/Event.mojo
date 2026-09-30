@@ -16,7 +16,9 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.writer import encode_toml
+from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.reader import decode_toml
+from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 from EventAttr import EventAttr
 
 struct Event(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
@@ -28,36 +30,74 @@ struct Event(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
         self.attrs = List[EventAttr]()
 
     def encoded_len(self, options: EncodeOptions) raises -> Int:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        return text.byte_length()
+        var buf = List[Byte]()
+        self.encode_to(buf, options)
+        return len(buf)
 
     def encode_to(self, mut buf: List[Byte], options: EncodeOptions) raises:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        var raw = text.as_bytes()
-        var i = 0
-        while i < len(raw):
-            buf.append(raw[i])
-            i += 1
+        var start = len(buf)
+        self._write(buf, options, True, String(), False)
+        if len(buf) == start or Int(buf[len(buf) - 1]) != 10:
+            buf.append(Byte(10))
 
-    def _to_doc(self) raises -> TomlDoc:
-        var doc = TomlDoc()
-        self._fill(doc, doc.root)
-        return doc^
+    def _write(self, mut buf: List[Byte], options: EncodeOptions, root: Bool, prefix: String, inline: Bool) raises:
+        if inline or ((not root) and options.inline_tables):
+            self._write_inline(buf, options)
+            return
+        _ = prefix
+        append_ascii(buf, "ts")
+        append_ascii(buf, " = ")
+        append_int(buf, self.ts)
+        buf.append(Byte(10))
+        var _np1 = String("attrs")
+        if prefix.byte_length() > 0:
+            _np1 = prefix + ".attrs"
+        var _i1 = 0
+        if options.compact_arrays or options.inline_tables:
+            append_ascii(buf, "attrs")
+            append_ascii(buf, " = [")
+            while _i1 < len(self.attrs):
+                if _i1 > 0:
+                    append_ascii(buf, ", ")
+                self.attrs[_i1]._write(buf, options, False, _np1, True)
+                _i1 += 1
+            append_ascii(buf, "]\n")
+        else:
+            while _i1 < len(self.attrs):
+                buf.append(Byte(10))
+                append_ascii(buf, "[[")
+                append_ascii(buf, _np1)
+                append_ascii(buf, "]]\n")
+                self.attrs[_i1]._write(buf, options, False, _np1, False)
+                _i1 += 1
 
-    def _fill(self, mut doc: TomlDoc, node: Int) raises:
-        var _k0 = doc.add_text(String("ts"))
-        doc.append_child(node, _k0, doc.make_int(self.ts, node))
-        var _k1 = doc.add_text(String("attrs"))
-        var _arr = doc.make_array(node)
+    def _write_inline(self, mut buf: List[Byte], options: EncodeOptions) raises:
+        buf.append(Byte(123))
+        var _first = True
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "ts")
+        append_ascii(buf, " = ")
+        append_int(buf, self.ts)
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "attrs")
+        append_ascii(buf, " = ")
+        buf.append(Byte(91))
         var _i = 0
         while _i < len(self.attrs):
-            var _el = doc.make_table(_arr)
-            self.attrs[_i]._fill(doc, _el)
-            doc.append_child(_arr, -1, _el)
+            if _i > 0:
+                append_ascii(buf, ", ")
+            self.attrs[_i]._write(buf, options, False, String(), True)
             _i += 1
-        doc.append_child(node, _k1, _arr)
+        buf.append(Byte(93))
+        buf.append(Byte(125))
+
+    def read_text(mut self, text: String) raises DecodeError:
+        var doc = decode_toml(text)
+        self.read_from(doc, doc.root)
 
     def read_from(mut self, doc: TomlDoc, node: Int) raises DecodeError:
         if doc.kind(node) != TK_TABLE:

@@ -8,9 +8,12 @@ numbers below come from `benches/microbench.mojo` on one machine, 4000
 iterations after a short warmup. They are a local compile-test loop. They are
 not a ranking against serializers in other languages.
 
-On that run, generated encode was about 3479 ns and generated decode about
-5273 ns for a 120-byte `Message`. Dynamic decode of a three-key document was
-about 2772 ns, and dynamic encode of that value was about 920 ns.
+On that run, after the encode path stopped building a temporary tree, a
+120-byte `Message` encoded in about 760 ns and decoded in about 730 ns.
+Before that change the same bench was about 3480 ns to encode and 5270 ns
+to decode. A three-key dynamic document encoded in about 550 ns and decoded
+in about 2000 ns; the earlier numbers were about 920 ns and 2770 ns. The
+slower of two back-to-back runs is the one quoted here.
 
 ## One arena
 
@@ -49,19 +52,25 @@ lot of stack.
 **Trade-off.** A document deeper than 128 levels is rejected. Real
 configuration files are far shallower.
 
-## Encode builds a second walk
+## Encode writes bytes directly
 
-`encode_toml` walks the arena and writes bytes into a `List[Byte]`. Generated
-`encode_to` first fills an arena from the struct, then calls the same writer.
+`encode_toml` walks the arena and appends bytes. Integers are written as
+digits into that buffer. Generated `encode_to` does not build an arena first.
+It writes the known keys itself. `encoded_len` is that same write, then the
+length of the buffer.
 
-**Problem.** Writing straight into the output from the struct avoids the
-arena. It also duplicates the header and inline-table rules.
+**Problem.** The first generator filled a `TomlDoc` and then serialized it.
+Every field paid for a node, a key string, and an edge, and the bytes were
+copied again into the returned `String`.
 
-**What we do.** One writer owns layout. Generated code only records values.
-The microbench measures that path, including the arena fill.
+**Trade-off.** The struct writer and the arena writer must agree on header
+layout. `tests/test_generated.mojo` checks the struct path. The arena writer
+still serves `TomlDoc`, including documents that have no schema.
 
-**Trade-off.** The generated encode pays for a tree it throws away. The layout
-stays consistent with `TomlDoc`.
+A flat generated struct also decodes without an arena. `read_text` scans
+`key = value` lines. A `[` or `{` in the text falls back to the full parser,
+so nested tables still work. Structs that contain tables or arrays always use
+the full parser.
 
 ## Key order and headers
 

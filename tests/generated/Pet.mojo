@@ -16,7 +16,9 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.writer import encode_toml
+from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.reader import decode_toml
+from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 from Cat import Cat
 from Dog import Dog
 
@@ -31,30 +33,44 @@ struct Pet(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
         self.Dog = Optional[Dog]()
 
     def encoded_len(self, options: EncodeOptions) raises -> Int:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        return text.byte_length()
+        var buf = List[Byte]()
+        self.encode_to(buf, options)
+        return len(buf)
 
     def encode_to(self, mut buf: List[Byte], options: EncodeOptions) raises:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        var raw = text.as_bytes()
-        var i = 0
-        while i < len(raw):
-            buf.append(raw[i])
-            i += 1
+        var start = len(buf)
+        self._write(buf, options, True, String(), False)
+        if len(buf) == start or Int(buf[len(buf) - 1]) != 10:
+            buf.append(Byte(10))
 
-    def _to_doc(self) raises -> TomlDoc:
-        var doc = TomlDoc()
-        self._fill(doc, doc.root)
-        return doc^
-
-    def _fill(self, mut doc: TomlDoc, node: Int) raises:
-        _ = node
+    def _write(self, mut buf: List[Byte], options: EncodeOptions, root: Bool, prefix: String, inline: Bool) raises:
+        if inline or ((not root) and options.inline_tables):
+            self._write_inline(buf, options)
+            return
+        _ = prefix
+        _ = root
+        _ = inline
         if self.tag == 0 and self.Cat:
-            self.Cat.value()._fill(doc, node)
+            self.Cat.value()._write(buf, options, True, prefix, False)
+            return
         if self.tag == 1 and self.Dog:
-            self.Dog.value()._fill(doc, node)
+            self.Dog.value()._write(buf, options, True, prefix, False)
+            return
+
+    def _write_inline(self, mut buf: List[Byte], options: EncodeOptions) raises:
+        _ = options
+        if self.tag == 0 and self.Cat:
+            self.Cat.value()._write_inline(buf, options)
+            return
+        if self.tag == 1 and self.Dog:
+            self.Dog.value()._write_inline(buf, options)
+            return
+        buf.append(Byte(123))
+        buf.append(Byte(125))
+
+    def read_text(mut self, text: String) raises DecodeError:
+        var doc = decode_toml(text)
+        self.read_from(doc, doc.root)
 
     def read_from(mut self, doc: TomlDoc, node: Int) raises DecodeError:
         if doc.kind(node) != TK_TABLE:

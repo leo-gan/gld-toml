@@ -16,7 +16,9 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.writer import encode_toml
+from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.reader import decode_toml
+from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 
 struct LongList(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
     var value: Int64
@@ -27,33 +29,64 @@ struct LongList(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
         self.next = Optional[Box[LongList]]()
 
     def encoded_len(self, options: EncodeOptions) raises -> Int:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        return text.byte_length()
+        var buf = List[Byte]()
+        self.encode_to(buf, options)
+        return len(buf)
 
     def encode_to(self, mut buf: List[Byte], options: EncodeOptions) raises:
-        var doc = self._to_doc()
-        var text = encode_toml(doc, options)
-        var raw = text.as_bytes()
-        var i = 0
-        while i < len(raw):
-            buf.append(raw[i])
-            i += 1
+        var start = len(buf)
+        self._write(buf, options, True, String(), False)
+        if len(buf) == start or Int(buf[len(buf) - 1]) != 10:
+            buf.append(Byte(10))
 
-    def _to_doc(self) raises -> TomlDoc:
-        var doc = TomlDoc()
-        self._fill(doc, doc.root)
-        return doc^
-
-    def _fill(self, mut doc: TomlDoc, node: Int) raises:
-        var _k0 = doc.add_text(String("value"))
-        doc.append_child(node, _k0, doc.make_int(self.value, node))
-        var _k1 = doc.add_text(String("next"))
+    def _write(self, mut buf: List[Byte], options: EncodeOptions, root: Bool, prefix: String, inline: Bool) raises:
+        if inline or ((not root) and options.inline_tables):
+            self._write_inline(buf, options)
+            return
+        _ = prefix
+        append_ascii(buf, "value")
+        append_ascii(buf, " = ")
+        append_int(buf, self.value)
+        buf.append(Byte(10))
         if self.next:
-            var _inner = self.next.value().copy()
-            var _child = doc.make_table(node)
-            _inner[]._fill(doc, _child)
-            doc.append_child(node, _k1, _child)
+            var _in1 = self.next.value().copy()
+            var _np1 = String("next")
+            if prefix.byte_length() > 0:
+                _np1 = prefix + ".next"
+            if options.inline_tables:
+                append_ascii(buf, "next")
+                append_ascii(buf, " = ")
+                _in1[]._write(buf, options, False, _np1, True)
+                buf.append(Byte(10))
+            else:
+                buf.append(Byte(10))
+                append_ascii(buf, "[")
+                append_ascii(buf, _np1)
+                append_ascii(buf, "]\n")
+                _in1[]._write(buf, options, False, _np1, False)
+
+    def _write_inline(self, mut buf: List[Byte], options: EncodeOptions) raises:
+        buf.append(Byte(123))
+        var _first = True
+        if not _first:
+            append_ascii(buf, ", ")
+        _first = False
+        append_ascii(buf, "value")
+        append_ascii(buf, " = ")
+        append_int(buf, self.value)
+        if self.next:
+            var _in1 = self.next.value().copy()
+            if not _first:
+                append_ascii(buf, ", ")
+            _first = False
+            append_ascii(buf, "next")
+            append_ascii(buf, " = ")
+            _in1[]._write(buf, options, False, String(), True)
+        buf.append(Byte(125))
+
+    def read_text(mut self, text: String) raises DecodeError:
+        var doc = decode_toml(text)
+        self.read_from(doc, doc.root)
 
     def read_from(mut self, doc: TomlDoc, node: Int) raises DecodeError:
         if doc.kind(node) != TK_TABLE:
