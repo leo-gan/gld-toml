@@ -16,7 +16,7 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.flat import parse_f64, parse_i64, parse_toml_str, skip_tail, span_is, take_prefix, value_end
 from wire.reader import decode_toml
 from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 
@@ -44,12 +44,22 @@ struct EventAttr(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
             self._write_inline(buf, options)
             return
         _ = prefix
-        append_ascii(buf, "key")
-        append_ascii(buf, " = ")
+        buf.append(Byte(107))
+        buf.append(Byte(101))
+        buf.append(Byte(121))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_toml_str(buf, self.key)
         buf.append(Byte(10))
-        append_ascii(buf, "value")
-        append_ascii(buf, " = ")
+        buf.append(Byte(118))
+        buf.append(Byte(97))
+        buf.append(Byte(108))
+        buf.append(Byte(117))
+        buf.append(Byte(101))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_toml_str(buf, self.value)
         buf.append(Byte(10))
 
@@ -73,6 +83,40 @@ struct EventAttr(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
     def read_text(mut self, text: String) raises DecodeError:
         var raw = text.as_bytes()
         var n = len(raw)
+        var _ord = 0
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "key = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                var _esc = _nx
+                while _esc < _ve and Int(raw[_esc]) != 92:
+                    _esc += 1
+                if _esc < _ve:
+                    _ord = -1
+                else:
+                    self.key = parse_toml_str(raw, _nx, _ve)
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "value = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                var _esc = _nx
+                while _esc < _ve and Int(raw[_esc]) != 92:
+                    _esc += 1
+                if _esc < _ve:
+                    _ord = -1
+                else:
+                    self.value = parse_toml_str(raw, _nx, _ve)
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            while _ord < n and (Int(raw[_ord]) == 32 or Int(raw[_ord]) == 9 or Int(raw[_ord]) == 10 or Int(raw[_ord]) == 13):
+                _ord += 1
+            if _ord == n:
+                return
         var i = 0
         while i < n:
             var c = Int(raw[i])

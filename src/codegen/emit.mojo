@@ -124,7 +124,7 @@ def _emit_struct(doc: SchemaDoc, ty: SchemaType, name: String, self_id: Int) rai
     out += "from wire.doc import (\n"
     out += "    TK_ARRAY,\n    TK_DATETIME,\n    TK_FALSE,\n    TK_FLOAT,\n    TK_INT,\n"
     out += "    TK_STRING,\n    TK_TABLE,\n    TK_TRUE,\n    TomlDateTime,\n    TomlDoc,\n)\n"
-    out += "from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is\n"
+    out += "from wire.flat import parse_f64, parse_i64, parse_toml_str, skip_tail, span_is, take_prefix, value_end\n"
     out += "from wire.reader import decode_toml\n"
     out += "from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str\n"
     var i = 0
@@ -473,10 +473,26 @@ def _bare_key(name: String) -> Bool:
     return True
 
 
+def _byte_appends(text: String, pad: String) -> String:
+    var out = String("")
+    var b = text.as_bytes()
+    var i = 0
+    while i < len(b):
+        out += pad + "buf.append(Byte(" + String(Int(b[i])) + "))\n"
+        i += 1
+    return out
+
+
 def _key_lit(name: String) -> String:
     if _bare_key(name):
         return "append_ascii(buf, \"" + name + "\")\n"
     return "append_toml_str(buf, String(\"" + name + "\"))\n"
+
+
+def _key_eq(name: String, pad: String) -> String:
+    if _bare_key(name):
+        return _byte_appends(name + " = ", pad)
+    return pad + "append_toml_str(buf, String(\"" + name + "\"))\n" + pad + "append_ascii(buf, \" = \")\n"
 
 
 def _emit_object_write(
@@ -592,8 +608,7 @@ def _emit_std_field(
         out += pad + "    " + ix + " += 1\n"
         out += pad + "append_ascii(buf, \"]\\n\")\n"
         return out
-    out += pad + _key_lit(key)
-    out += pad + "append_ascii(buf, \" = \")\n"
+    out += _key_eq(key, pad)
     out += pad + _scalar_write(u, expr)
     out += pad + "buf.append(Byte(10))\n"
     return out
@@ -649,9 +664,65 @@ def _is_flat(doc: SchemaDoc, ty: SchemaType) -> Bool:
     return True
 
 
+def _all_required(ty: SchemaType) -> Bool:
+    var i = 0
+    while i < len(ty.props):
+        if not ty.props[i].required:
+            return False
+        i += 1
+    return True
+
+
+def _emit_ordered(doc: SchemaDoc, ty: SchemaType) -> String:
+    var out = String("        var _ord = 0\n")
+    var i = 0
+    while i < len(ty.props):
+        var prop = ty.props[i].copy()
+        var fname = mojo_ident(prop.name)
+        var u = _unwrap(doc, prop.type_id).copy()
+        out += "        if _ord >= 0:\n"
+        out += "            var _nx = take_prefix(raw, _ord, \"" + prop.name + " = \")\n"
+        out += "            if _nx < 0:\n"
+        out += "                _ord = -1\n"
+        out += "            else:\n"
+        out += "                var _ve = value_end(raw, _nx)\n"
+        if u.kind == ST_BOOL:
+            out += "                self." + fname + " = span_is(raw, _nx, _ve, \"true\")\n"
+            out += "                if not self." + fname + " and not span_is(raw, _nx, _ve, \"false\"):\n"
+            out += "                    _ord = -1\n"
+            out += "                else:\n"
+            out += "                    _ord = skip_tail(raw, _ve)\n"
+        elif u.kind == ST_INT:
+            out += "                self." + fname + " = parse_i64(raw, _nx, _ve)\n"
+            out += "                _ord = skip_tail(raw, _ve)\n"
+        elif u.kind == ST_NUMBER:
+            out += "                self." + fname + " = parse_f64(raw, _nx, _ve)\n"
+            out += "                _ord = skip_tail(raw, _ve)\n"
+        elif u.kind == ST_STRING:
+            out += "                var _esc = _nx\n"
+            out += "                while _esc < _ve and Int(raw[_esc]) != 92:\n"
+            out += "                    _esc += 1\n"
+            out += "                if _esc < _ve:\n"
+            out += "                    _ord = -1\n"
+            out += "                else:\n"
+            out += "                    self." + fname + " = parse_toml_str(raw, _nx, _ve)\n"
+            out += "                    _ord = skip_tail(raw, _ve)\n"
+        else:
+            out += "                _ord = -1\n"
+        i += 1
+    out += "        if _ord >= 0:\n"
+    out += "            while _ord < n and (Int(raw[_ord]) == 32 or Int(raw[_ord]) == 9 or Int(raw[_ord]) == 10 or Int(raw[_ord]) == 13):\n"
+    out += "                _ord += 1\n"
+    out += "            if _ord == n:\n"
+    out += "                return\n"
+    return out
+
+
 def _emit_flat_read(doc: SchemaDoc, ty: SchemaType) -> String:
     var out = String("        var raw = text.as_bytes()\n")
     out += "        var n = len(raw)\n"
+    if _all_required(ty):
+        out += _emit_ordered(doc, ty)
     out += "        var i = 0\n"
     out += "        while i < n:\n"
     out += "            var c = Int(raw[i])\n"

@@ -55,11 +55,16 @@ def string_from_utf8[
         raise DecodeError(DecodeError.KIND_UTF8, offset, field)
 
 
-def string_from_bytes(buf: List[Byte], offset: Int) raises DecodeError -> String:
-    try:
-        return String(from_utf8=buf)
-    except _:
-        raise DecodeError(DecodeError.KIND_UTF8, offset)
+def trusted_utf8[
+    origin: ImmOrigin
+](span: Span[Byte, origin]) -> String:
+    """Copy bytes that `validate_utf8` already accepted, or that this encoder just wrote."""
+    return String(unsafe_from_utf8=span)
+
+
+def string_from_bytes(buf: List[Byte], offset: Int) -> String:
+    _ = offset
+    return String(unsafe_from_utf8=buf)
 
 
 def append_scalar(mut buf: List[Byte], cp: Int, offset: Int) raises DecodeError:

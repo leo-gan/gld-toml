@@ -16,7 +16,7 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.flat import parse_f64, parse_i64, parse_toml_str, skip_tail, span_is, take_prefix, value_end
 from wire.reader import decode_toml
 from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 
@@ -44,12 +44,27 @@ struct DocumentMeta(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
             self._write_inline(buf, options)
             return
         _ = prefix
-        append_ascii(buf, "region")
-        append_ascii(buf, " = ")
+        buf.append(Byte(114))
+        buf.append(Byte(101))
+        buf.append(Byte(103))
+        buf.append(Byte(105))
+        buf.append(Byte(111))
+        buf.append(Byte(110))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_toml_str(buf, self.region)
         buf.append(Byte(10))
-        append_ascii(buf, "version")
-        append_ascii(buf, " = ")
+        buf.append(Byte(118))
+        buf.append(Byte(101))
+        buf.append(Byte(114))
+        buf.append(Byte(115))
+        buf.append(Byte(105))
+        buf.append(Byte(111))
+        buf.append(Byte(110))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_int(buf, self.version)
         buf.append(Byte(10))
 
@@ -73,6 +88,34 @@ struct DocumentMeta(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
     def read_text(mut self, text: String) raises DecodeError:
         var raw = text.as_bytes()
         var n = len(raw)
+        var _ord = 0
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "region = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                var _esc = _nx
+                while _esc < _ve and Int(raw[_esc]) != 92:
+                    _esc += 1
+                if _esc < _ve:
+                    _ord = -1
+                else:
+                    self.region = parse_toml_str(raw, _nx, _ve)
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "version = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.version = parse_i64(raw, _nx, _ve)
+                _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            while _ord < n and (Int(raw[_ord]) == 32 or Int(raw[_ord]) == 9 or Int(raw[_ord]) == 10 or Int(raw[_ord]) == 13):
+                _ord += 1
+            if _ord == n:
+                return
         var i = 0
         while i < n:
             var c = Int(raw[i])

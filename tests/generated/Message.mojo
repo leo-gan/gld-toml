@@ -16,7 +16,7 @@ from wire.doc import (
     TomlDateTime,
     TomlDoc,
 )
-from wire.flat import parse_f64, parse_i64, parse_toml_str, span_is
+from wire.flat import parse_f64, parse_i64, parse_toml_str, skip_tail, span_is, take_prefix, value_end
 from wire.reader import decode_toml
 from wire.writer import append_ascii, append_bool, append_datetime, append_float, append_int, append_toml_str
 
@@ -56,36 +56,108 @@ struct Message(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
             self._write_inline(buf, options)
             return
         _ = prefix
-        append_ascii(buf, "f_bool")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(98))
+        buf.append(Byte(111))
+        buf.append(Byte(111))
+        buf.append(Byte(108))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_bool(buf, self.f_bool)
         buf.append(Byte(10))
-        append_ascii(buf, "f_int32")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(105))
+        buf.append(Byte(110))
+        buf.append(Byte(116))
+        buf.append(Byte(51))
+        buf.append(Byte(50))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_int(buf, self.f_int32)
         buf.append(Byte(10))
-        append_ascii(buf, "f_int64")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(105))
+        buf.append(Byte(110))
+        buf.append(Byte(116))
+        buf.append(Byte(54))
+        buf.append(Byte(52))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_int(buf, self.f_int64)
         buf.append(Byte(10))
-        append_ascii(buf, "f_float64")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(102))
+        buf.append(Byte(108))
+        buf.append(Byte(111))
+        buf.append(Byte(97))
+        buf.append(Byte(116))
+        buf.append(Byte(54))
+        buf.append(Byte(52))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_float(buf, self.f_float64)
         buf.append(Byte(10))
-        append_ascii(buf, "f_string")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(115))
+        buf.append(Byte(116))
+        buf.append(Byte(114))
+        buf.append(Byte(105))
+        buf.append(Byte(110))
+        buf.append(Byte(103))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_toml_str(buf, self.f_string)
         buf.append(Byte(10))
-        append_ascii(buf, "f_bool_2")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(98))
+        buf.append(Byte(111))
+        buf.append(Byte(111))
+        buf.append(Byte(108))
+        buf.append(Byte(95))
+        buf.append(Byte(50))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_bool(buf, self.f_bool_2)
         buf.append(Byte(10))
-        append_ascii(buf, "f_int32_2")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(105))
+        buf.append(Byte(110))
+        buf.append(Byte(116))
+        buf.append(Byte(51))
+        buf.append(Byte(50))
+        buf.append(Byte(95))
+        buf.append(Byte(50))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_int(buf, self.f_int32_2)
         buf.append(Byte(10))
-        append_ascii(buf, "f_string_2")
-        append_ascii(buf, " = ")
+        buf.append(Byte(102))
+        buf.append(Byte(95))
+        buf.append(Byte(115))
+        buf.append(Byte(116))
+        buf.append(Byte(114))
+        buf.append(Byte(105))
+        buf.append(Byte(110))
+        buf.append(Byte(103))
+        buf.append(Byte(95))
+        buf.append(Byte(50))
+        buf.append(Byte(32))
+        buf.append(Byte(61))
+        buf.append(Byte(32))
         append_toml_str(buf, self.f_string_2)
         buf.append(Byte(10))
 
@@ -145,6 +217,94 @@ struct Message(Copyable, Movable, Defaultable, Deinitable, TomlDatum):
     def read_text(mut self, text: String) raises DecodeError:
         var raw = text.as_bytes()
         var n = len(raw)
+        var _ord = 0
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_bool = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.f_bool = span_is(raw, _nx, _ve, "true")
+                if not self.f_bool and not span_is(raw, _nx, _ve, "false"):
+                    _ord = -1
+                else:
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_int32 = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.f_int32 = parse_i64(raw, _nx, _ve)
+                _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_int64 = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.f_int64 = parse_i64(raw, _nx, _ve)
+                _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_float64 = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.f_float64 = parse_f64(raw, _nx, _ve)
+                _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_string = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                var _esc = _nx
+                while _esc < _ve and Int(raw[_esc]) != 92:
+                    _esc += 1
+                if _esc < _ve:
+                    _ord = -1
+                else:
+                    self.f_string = parse_toml_str(raw, _nx, _ve)
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_bool_2 = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.f_bool_2 = span_is(raw, _nx, _ve, "true")
+                if not self.f_bool_2 and not span_is(raw, _nx, _ve, "false"):
+                    _ord = -1
+                else:
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_int32_2 = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                self.f_int32_2 = parse_i64(raw, _nx, _ve)
+                _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            var _nx = take_prefix(raw, _ord, "f_string_2 = ")
+            if _nx < 0:
+                _ord = -1
+            else:
+                var _ve = value_end(raw, _nx)
+                var _esc = _nx
+                while _esc < _ve and Int(raw[_esc]) != 92:
+                    _esc += 1
+                if _esc < _ve:
+                    _ord = -1
+                else:
+                    self.f_string_2 = parse_toml_str(raw, _nx, _ve)
+                    _ord = skip_tail(raw, _ve)
+        if _ord >= 0:
+            while _ord < n and (Int(raw[_ord]) == 32 or Int(raw[_ord]) == 9 or Int(raw[_ord]) == 10 or Int(raw[_ord]) == 13):
+                _ord += 1
+            if _ord == n:
+                return
         var i = 0
         while i < n:
             var c = Int(raw[i])

@@ -22,12 +22,9 @@ trait TomlDatum(Copyable, Movable, Defaultable, Deinitable):
 def encode_text[
     T: TomlDatum
 ](value: T, options: EncodeOptions = EncodeOptions.standard) raises -> String:
-    var buf = List[Byte]()
+    var buf = List[Byte](capacity=128)
     value.encode_to(buf, options)
-    try:
-        return String(from_utf8=buf)
-    except _:
-        return String()
+    return String(unsafe_from_utf8=buf)
 
 
 def decode_text[
