@@ -1,5 +1,7 @@
 # mojo-toml
 
+[Serialization](https://leo-gan.github.io/serialization/) is the hub for the theory, the history, and the benchmarks.
+
 A from-scratch [TOML 1.1](https://toml.io/en/v1.1.0) implementation for
 [Mojo](https://mojolang.org/). The runtime and the code generator are written
 in Mojo. They do not wrap, link, or vendor tomli, toml-rs, BurntSushi/toml,
