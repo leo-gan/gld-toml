@@ -334,24 +334,16 @@ def append_float(mut out: List[Byte], v: Float64):
     var x = v
     if neg:
         x = Float64(0) - v
-    var scale = 0
-    var scaled = x
-    var limit = Float64(1000000000000000)
-    while scale <= 12 and scaled == scaled and scaled < limit:
-        var as_int = Int64(scaled)
-        if Float64(as_int) == scaled:
-            var back = Float64(as_int)
-            var s = scale
-            while s > 0:
-                back = back / Float64(10)
-                s -= 1
-            if back == x:
-                if neg:
-                    out.append(Byte(45))
-                _append_fixed(out, as_int, scale)
-                return
-        scaled = scaled * Float64(10)
-        scale += 1
+    # Integer-valued floats stay exact (`N.0`). Other values go straight to
+    # String. The old 13-step decimal search missed random suite floats and
+    # then called String anyway.
+    if x < 1.0e15:
+        var as_int = Int64(x)
+        if Float64(as_int) == x:
+            if neg:
+                out.append(Byte(45))
+            _append_fixed(out, as_int, 0)
+            return
     append_ascii(out, String(v))
 
 
